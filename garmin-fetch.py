@@ -1,8 +1,8 @@
 # %%
 import base64, requests, time, pytz, logging, os, sys, dotenv
 from datetime import datetime, timedelta
-from influxdb import InfluxDBClient
-from influxdb.exceptions import InfluxDBClientError
+from influxdb_client import InfluxDBClient, Point, WritePrecision
+from influxdb_client.client.write_api import SYNCHRONOUS
 import xml.etree.ElementTree as ET
 from garth.exc import GarthHTTPError
 from garminconnect import (
@@ -14,8 +14,8 @@ from garminconnect import (
 garmin_obj = None
 banner_text = """
 
-*****  █▀▀ ▄▀█ █▀█ █▀▄▀█ █ █▄ █    █▀▀ █▀█ ▄▀█ █▀▀ ▄▀█ █▄ █ ▄▀█  *****
-*****  █▄█ █▀█ █▀▄ █ ▀ █ █ █ ▀█    █▄█ █▀▄ █▀█ █▀  █▀█ █ ▀█ █▀█  *****
+*****  █▀▀ ▄▀█ █▀█ █▀▄▀█ █ █▄ █    █▀▀ █▀█ ▄▀█ █▀▀ ▄▀█ █▄ █ ▄▀█  *****
+*****  █▄█ █▀█ █▀▄ █ ▀ █ █ █ ▀█    █▄█ █▀▄ █▀█ █▀  █▀█ █ ▀█ █▀█  *****
 
 ______________________________________________________________________
 
@@ -30,11 +30,7 @@ if env_override:
     logging.warning("System ENV variables are overriden with override-default-vars.env")
 
 # %%
-INFLUXDB_HOST = os.getenv("INFLUXDB_HOST",'your.influxdb.hostname') # Required
-INFLUXDB_PORT = int(os.getenv("INFLUXDB_PORT", 8086)) # Required
-INFLUXDB_USERNAME = os.getenv("INFLUXDB_USERNAME", 'influxdb_username') # Required
-INFLUXDB_PASSWORD = os.getenv("INFLUXDB_PASSWORD", 'influxdb_access_password') # Required
-INFLUXDB_DATABASE = os.getenv("INFLUXDB_DATABASE", 'GarminStats') # Required
+INFLUXDB_BUCKET = os.getenv("INFLUXDB_BUCKET", "garmin") # Required
 TOKEN_DIR = os.getenv("TOKEN_DIR", "~/.garminconnect") # optional
 GARMINCONNECT_EMAIL = os.environ.get("GARMINCONNECT_EMAIL", None) # optional, asks in prompt on run if not provided
 GARMINCONNECT_PASSWORD = base64.b64decode(os.getenv("GARMINCONNECT_BASE64_PASSWORD")).decode("utf-8") if os.getenv("GARMINCONNECT_BASE64_PASSWORD") != None else None # optional, asks in prompt on run if not provided
@@ -45,7 +41,6 @@ MANUAL_END_DATE = os.getenv("MANUAL_END_DATE", datetime.today().strftime('%Y-%m-
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO") # optional
 FETCH_FAILED_WAIT_SECONDS = int(os.getenv("FETCH_FAILED_WAIT_SECONDS", 1800)) # optional
 RATE_LIMIT_CALLS_SECONDS = int(os.getenv("RATE_LIMIT_CALLS_SECONDS", 5)) # optional
-INFLUXDB_ENDPOINT_IS_HTTP = False if os.getenv("INFLUXDB_ENDPOINT_IS_HTTP") in ['False','false','FALSE','f','F','no','No','NO','0'] else True # optional
 GARMIN_DEVICENAME_AUTOMATIC = False if GARMIN_DEVICENAME != "Unknown" else True # optional
 UPDATE_INTERVAL_SECONDS = int(os.getenv("UPDATE_INTERVAL_SECONDS", 300)) # optional
 FETCH_ADVANCED_TRAINING_DATA = True if os.getenv("FETCH_ADVANCED_TRAINING_DATA") in ['True', 'true', 'TRUE','t', 'T', 'yes', 'Yes', 'YES', '1'] else False # optional
@@ -64,15 +59,21 @@ logging.basicConfig(
 
 # %%
 try:
-    if INFLUXDB_ENDPOINT_IS_HTTP:
-        influxdbclient = InfluxDBClient(host=INFLUXDB_HOST, port=INFLUXDB_PORT, username=INFLUXDB_USERNAME, password=INFLUXDB_PASSWORD)
+    influxdb_client = InfluxDBClient.from_env_properties()
+    # Test the connection
+    health = influxdb_client.health()
+    if health.status == "pass":
+        logging.info(f"Connected to InfluxDB v{health.version}")
     else:
-        influxdbclient = InfluxDBClient(host=INFLUXDB_HOST, port=INFLUXDB_PORT, username=INFLUXDB_USERNAME, password=INFLUXDB_PASSWORD, ssl=True, verify_ssl=True)
-    influxdbclient.switch_database(INFLUXDB_DATABASE)
-    influxdbclient.ping()
-except InfluxDBClientError as err:
+        raise Exception(f"InfluxDB health check failed: {health.message}")
+    
+    # Get write API with synchronous write mode
+    write_api = influxdb_client.write_api(write_options=SYNCHRONOUS)
+    # Get query API for fetching data
+    query_api = influxdb_client.query_api()
+except Exception as err:
     logging.error("Unable to connect with influxdb database! Aborted")
-    raise InfluxDBClientError("InfluxDB connection failed:" + str(err))
+    raise Exception("InfluxDB connection failed:" + str(err))
 
 # %%
 def iter_days(start_date: str, end_date: str):
@@ -127,10 +128,31 @@ def garmin_login():
 def write_points_to_influxdb(points):
     try:
         if len(points) != 0:
-            influxdbclient.write_points(points)
+            # Convert points to the format expected by InfluxDB v2 client
+            # The Point objects are created for each measurement
+            influx_points = []
+            for point in points:
+                p = Point(point["measurement"])
+                
+                # Add tags
+                for tag_key, tag_value in point["tags"].items():
+                    p = p.tag(tag_key, tag_value)
+                
+                # Add fields
+                for field_key, field_value in point["fields"].items():
+                    if field_value is not None:
+                        p = p.field(field_key, field_value)
+                
+                # Add timestamp
+                p = p.time(point["time"], WritePrecision.NS)
+                
+                influx_points.append(p)
+            
+            # Write points to InfluxDB
+            write_api.write(bucket=INFLUXDB_BUCKET, record=influx_points)
             logging.info("Successfully updated influxdb database with new points")
-    except InfluxDBClientError as err:
-        logging.error("Unable to connect with database! " + str(err))
+    except Exception as err:
+        logging.error("Unable to write to database! " + str(err))
 
 # %%
 def get_daily_stats(date_str):
@@ -818,8 +840,24 @@ if MANUAL_START_DATE:
     exit(0)
 else:
     try:
-        last_influxdb_sync_time_UTC = pytz.utc.localize(datetime.strptime(list(influxdbclient.query(f"SELECT * FROM HeartRateIntraday ORDER BY time DESC LIMIT 1").get_points())[0]['time'],"%Y-%m-%dT%H:%M:%SZ"))
-    except:
+        # Query using Flux to get the latest HeartRateIntraday point
+        flux_query = f'''
+        from(bucket: "{INFLUXDB_BUCKET}")
+          |> range(start: -90d)
+          |> filter(fn: (r) => r["_measurement"] == "HeartRateIntraday")
+          |> sort(columns: ["_time"], desc: true)
+          |> limit(n: 1)
+        '''
+        tables = query_api.query(flux_query)
+        
+        if tables and len(tables) > 0 and len(tables[0].records) > 0:
+            # Get the timestamp from the first record
+            last_influxdb_sync_time_UTC = tables[0].records[0].get_time().astimezone(pytz.timezone("UTC"))
+        else:
+            logging.warning("No previously synced data found in local InfluxDB database, defaulting to 7 day initial fetching. Use specific start date ENV variable to bulk update past data")
+            last_influxdb_sync_time_UTC = (datetime.today() - timedelta(days=7)).astimezone(pytz.timezone("UTC"))
+    except Exception as e:
+        logging.error(f"Error querying InfluxDB: {e}")
         logging.warning("No previously synced data found in local InfluxDB database, defaulting to 7 day initial fetching. Use specific start date ENV variable to bulk update past data")
         last_influxdb_sync_time_UTC = (datetime.today() - timedelta(days=7)).astimezone(pytz.timezone("UTC"))
     

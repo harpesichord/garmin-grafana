@@ -12,7 +12,7 @@ on:
 
 env:
   REGISTRY: docker.io
-  IMAGE_NAME: thisisarpanghosh/garmin-fetch-data
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   build:
