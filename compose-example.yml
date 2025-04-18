@@ -8,9 +8,9 @@ services:
     volumes:
       - ./garminconnect-tokens:/home/appuser/.garminconnect # (persistant tokens storage - garminconnect-tokens folder must be owned by 1000:1000)
     environment:
-      - INFLUXDB_URL=http://influxdb:8086
-      - INFLUXDB_ORG=my-org
-      - INFLUXDB_TOKEN=my-token
+      - INFLUXDB_V2_URL=http://influxdb:8086
+      - INFLUXDB_V2_ORG=my-org
+      - INFLUXDB_V2_TOKEN=my-token
       - INFLUXDB_BUCKET=garmin
       - UPDATE_INTERVAL_SECONDS=300
       - LOG_LEVEL=INFO
