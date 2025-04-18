@@ -1,4 +1,5 @@
 influxdb-client>=1.48.0
+influxdb>=5.3
 pytz>=2025.1
 Requests>=2.32
 garth>=0.5.3

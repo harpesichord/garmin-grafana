@@ -1,8 +1,6 @@
 # %%
 import base64, requests, time, pytz, logging, os, sys, dotenv
 from datetime import datetime, timedelta
-from influxdb_client import InfluxDBClient, Point, WritePrecision
-from influxdb_client.client.write_api import SYNCHRONOUS
 import xml.etree.ElementTree as ET
 from garth.exc import GarthHTTPError
 from garminconnect import (
@@ -11,6 +9,8 @@ from garminconnect import (
     GarminConnectConnectionError,
     GarminConnectTooManyRequestsError,
 )
+import influxdb_client_wrapper as db
+
 garmin_obj = None
 banner_text = """
 
@@ -30,7 +30,9 @@ if env_override:
     logging.warning("System ENV variables are overriden with override-default-vars.env")
 
 # %%
-INFLUXDB_BUCKET = os.getenv("INFLUXDB_BUCKET", "garmin") # Required
+# Set environment variables - compatibility with both v1 and v2
+INFLUXDB_VERSION = os.getenv("INFLUXDB_VERSION", "2")  # Default to v2
+
 TOKEN_DIR = os.getenv("TOKEN_DIR", "~/.garminconnect") # optional
 GARMINCONNECT_EMAIL = os.environ.get("GARMINCONNECT_EMAIL", None) # optional, asks in prompt on run if not provided
 GARMINCONNECT_PASSWORD = base64.b64decode(os.getenv("GARMINCONNECT_BASE64_PASSWORD")).decode("utf-8") if os.getenv("GARMINCONNECT_BASE64_PASSWORD") != None else None # optional, asks in prompt on run if not provided
@@ -56,6 +58,9 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout)
     ]
 )
+
+# Initialize InfluxDB client (either v1 or v2 based on environment)
+db.initialize_client()
 
 # %%
 try:
@@ -126,33 +131,7 @@ def garmin_login():
 
 # %%
 def write_points_to_influxdb(points):
-    try:
-        if len(points) != 0:
-            # Convert points to the format expected by InfluxDB v2 client
-            # The Point objects are created for each measurement
-            influx_points = []
-            for point in points:
-                p = Point(point["measurement"])
-                
-                # Add tags
-                for tag_key, tag_value in point["tags"].items():
-                    p = p.tag(tag_key, tag_value)
-                
-                # Add fields
-                for field_key, field_value in point["fields"].items():
-                    if field_value is not None:
-                        p = p.field(field_key, field_value)
-                
-                # Add timestamp
-                p = p.time(point["time"], WritePrecision.NS)
-                
-                influx_points.append(p)
-            
-            # Write points to InfluxDB
-            write_api.write(bucket=INFLUXDB_BUCKET, record=influx_points)
-            logging.info("Successfully updated influxdb database with new points")
-    except Exception as err:
-        logging.error("Unable to write to database! " + str(err))
+    db.write_points_to_influxdb(points)
 
 # %%
 def get_daily_stats(date_str):
@@ -839,27 +818,8 @@ if MANUAL_START_DATE:
     logging.info(f"Bulk update success : Fetched all available health metrics for date range {MANUAL_START_DATE} to {MANUAL_END_DATE}")
     exit(0)
 else:
-    try:
-        # Query using Flux to get the latest HeartRateIntraday point
-        flux_query = f'''
-        from(bucket: "{INFLUXDB_BUCKET}")
-          |> range(start: -90d)
-          |> filter(fn: (r) => r["_measurement"] == "HeartRateIntraday")
-          |> sort(columns: ["_time"], desc: true)
-          |> limit(n: 1)
-        '''
-        tables = query_api.query(flux_query)
-        
-        if tables and len(tables) > 0 and len(tables[0].records) > 0:
-            # Get the timestamp from the first record
-            last_influxdb_sync_time_UTC = tables[0].records[0].get_time().astimezone(pytz.timezone("UTC"))
-        else:
-            logging.warning("No previously synced data found in local InfluxDB database, defaulting to 7 day initial fetching. Use specific start date ENV variable to bulk update past data")
-            last_influxdb_sync_time_UTC = (datetime.today() - timedelta(days=7)).astimezone(pytz.timezone("UTC"))
-    except Exception as e:
-        logging.error(f"Error querying InfluxDB: {e}")
-        logging.warning("No previously synced data found in local InfluxDB database, defaulting to 7 day initial fetching. Use specific start date ENV variable to bulk update past data")
-        last_influxdb_sync_time_UTC = (datetime.today() - timedelta(days=7)).astimezone(pytz.timezone("UTC"))
+    # Get the latest timestamp from our database or default to 7 days ago
+    last_influxdb_sync_time_UTC = db.get_latest_timestamp_or_default(default_days=7)
     
     while True:
         last_watch_sync_time_UTC = datetime.fromtimestamp(int(garmin_obj.get_device_last_used().get('lastUsedDeviceUploadTime')/1000)).astimezone(pytz.timezone("UTC"))
