@@ -1,18 +1,17 @@
 services:
   garmin-fetch-data:
     restart: unless-stopped
-    image: thisisarpanghosh/garmin-fetch-data:latest
+    image: ghcr.io/harpesichord/garmin-grafana:latest
     container_name: garmin-fetch-data
     depends_on:
       - influxdb
     volumes:
       - ./garminconnect-tokens:/home/appuser/.garminconnect # (persistant tokens storage - garminconnect-tokens folder must be owned by 1000:1000)
     environment:
-      - INFLUXDB_HOST=influxdb
-      - INFLUXDB_PORT=8086
-      - INFLUXDB_USERNAME=influxdb_user
-      - INFLUXDB_PASSWORD=influxdb_secret_password
-      - INFLUXDB_DATABASE=GarminStats
+      - INFLUXDB_URL=http://influxdb:8086
+      - INFLUXDB_ORG=my-org
+      - INFLUXDB_TOKEN=my-token
+      - INFLUXDB_BUCKET=garmin
       - UPDATE_INTERVAL_SECONDS=300
       - LOG_LEVEL=INFO
 
@@ -21,15 +20,17 @@ services:
     container_name: influxdb
     hostname: influxdb
     environment:
-      - INFLUXDB_DB=GarminStats
-      - INFLUXDB_USER=influxdb_user
-      - INFLUXDB_USER_PASSWORD=influxdb_secret_password
-      - INFLUXDB_DATA_INDEX_VERSION=tsi1
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=admin
+      - DOCKER_INFLUXDB_INIT_PASSWORD=adminpassword
+      - DOCKER_INFLUXDB_INIT_ORG=my-org
+      - DOCKER_INFLUXDB_INIT_BUCKET=garmin
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=my-token
     ports:
       - '8086:8086'
     volumes:
-      - influxdb_data:/var/lib/influxdb
-    image: 'influxdb:1.11'
+      - influxdb_data:/var/lib/influxdb2
+    image: 'influxdb:2.7'
 
   grafana:
     restart: unless-stopped
