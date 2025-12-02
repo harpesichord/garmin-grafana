@@ -20,16 +20,11 @@ env:
 
 jobs:
   build:
-    name: Build Multi-Arch Docker Image and Push to Docker Hub & GHCR
-    if: ${{ github.repository == 'arpanghosh8453/garmin-grafana' }}
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up QEMU for Multi-Architecture Support
+      - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
@@ -37,6 +32,13 @@ jobs:
 
       - name: Build the Docker image (multi-arch)
         run: docker buildx build --platform linux/amd64 --load -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest .
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test the Docker image
+        run: docker compose -f compose-example.yml up -d
 
   push_to_registry:
     name: Push Docker image to GitHub Packages
